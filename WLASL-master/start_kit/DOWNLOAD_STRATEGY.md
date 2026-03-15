@@ -15,7 +15,32 @@
 | `HTTP 403` | Some | Access denied by host |
 | `SSL cert error` | Few | Certificate issue (handled with --insecure) |
 
-## Recommended Download Strategy
+## Fast-Testing / Project Bootstrap (Recommended First Step)
+
+Download a small subset to establish the project structure quickly:
+
+```powershell
+cd WLASL-master\start_kit
+# Option A: Top 100 glosses, 2 videos each, non-YouTube only
+python fast_video_downloader.py --index WLASL_v0.3.json --out raw_videos --workers 8 --retries 1 --nonyoutube-only --insecure --top-n 100 --max-per-gloss 2
+
+# Option B: Specific words you need for MVP
+python fast_video_downloader.py --index WLASL_v0.3.json --out raw_videos --workers 8 --retries 1 --nonyoutube-only --insecure --words hello book water help yes no please thank
+
+# Option C: Top 50 words, 1 video each (fastest possible test)
+python fast_video_downloader.py --index WLASL_v0.3.json --out raw_videos --workers 8 --retries 1 --nonyoutube-only --insecure --top-n 50 --max-per-gloss 1
+```
+
+**New subset flags:**
+| Flag | Description |
+|------|-------------|
+| `--top-n N` | Only download the first N glosses (words) from the JSON |
+| `--words W1 W2 ...` | Whitelist specific words by name (case-insensitive) |
+| `--max-per-gloss M` | Cap video instances per word (e.g. `2` means 2 videos per sign) |
+
+These flags combine freely with `--youtube-only` / `--nonyoutube-only`.
+
+## Full Dataset Download Strategy
 
 ### Step 1: Download Non-YouTube Videos Only (Fastest & Most Reliable)
 ```powershell
@@ -48,5 +73,5 @@ python fast_video_downloader.py --index WLASL_v0.3.json --out raw_videos --worke
 ## Tips
 1. Check the log file `download_TIMESTAMP.log` to see which videos failed
 2. Dead videos won't be retried again (skipped if file already attempted in same run)
-3. If you want to focus on only common signs for MVP, use `--nonyoutube-only` first, then manually curate good videos
+3. If you want to focus on only common signs for MVP, use `--top-n 100 --max-per-gloss 2 --nonyoutube-only` first, then manually curate good videos
 4. You can safely interrupt (Ctrl+C) and resume—already downloaded files are automatically skipped
