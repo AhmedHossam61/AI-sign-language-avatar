@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Sign Language Avatar</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>AI Sign Language Avatar</h1>
+      <p class="subtitle">Type English text and watch the avatar sign it in ASL</p>
+    </header>
+
+    <div id="controls">
+      <textarea
+        id="input-text"
+        placeholder="Type a sentence, e.g. Hello, how are you today?"
+        rows="3"
+      ></textarea>
+      <div id="control-row">
+        <button id="sign-btn">Sign it ▶</button>
+        <button id="replay-btn" disabled>Replay ↺</button>
+        <label>
+          Speed
+          <input id="speed-slider" type="range" min="0.25" max="3" step="0.25" value="1" />
+          <span id="speed-label">1×</span>
+        </label>
+      </div>
+      <div id="gloss-display"></div>
+    </div>
+
+    <div id="canvas-container">
+      <canvas id="three-canvas"></canvas>
+      <div id="status-overlay"></div>
+    </div>
+  </div>
+
+  <!-- Three.js r165 via CDN — no build step required -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+    }
+  }
+  </script>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
