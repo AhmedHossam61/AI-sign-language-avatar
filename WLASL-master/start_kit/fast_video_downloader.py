@@ -19,6 +19,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification for problematic hosts")
     parser.add_argument("--youtube-only", action="store_true", help="Download only YouTube links")
     parser.add_argument("--nonyoutube-only", action="store_true", help="Download only non-YouTube links")
+    # Subset options for fast testing / project bootstrapping
+    parser.add_argument("--top-n", type=int, default=None, metavar="N",
+                        help="Only download the first N glosses (words) from the index. "
+                             "Useful for quickly bootstrapping the motion library (e.g. --top-n 100).")
+    parser.add_argument("--words", nargs="+", metavar="WORD",
+                        help="Whitelist of specific gloss words to download (case-insensitive). "
+                             "E.g. --words hello book water")
+    parser.add_argument("--max-per-gloss", type=int, default=None, metavar="M",
+                        help="Maximum number of video instances to download per gloss. "
+                             "Set to 1-3 for fast testing (e.g. --max-per-gloss 2).")
     return parser.parse_args()
 
 
@@ -27,13 +37,25 @@ def is_youtube(url: str) -> bool:
     return "youtube.com" in u or "youtu.be" in u
 
 
-def load_instances(index_path: Path):
+def load_instances(index_path: Path, top_n: int = None, words: list = None, max_per_gloss: int = None):
     with index_path.open("r", encoding="utf-8") as f:
         content = json.load(f)
 
+    # Filter by whitelist of words first
+    if words:
+        words_lower = {w.lower() for w in words}
+        content = [e for e in content if e.get("gloss", "").lower() in words_lower]
+
+    # Limit to first N glosses
+    if top_n is not None:
+        content = content[:top_n]
+
     instances = []
     for entry in content:
-        for inst in entry.get("instances", []):
+        entry_instances = entry.get("instances", [])
+        if max_per_gloss is not None:
+            entry_instances = entry_instances[:max_per_gloss]
+        for inst in entry_instances:
             instances.append(inst)
     return instances
 
@@ -152,7 +174,7 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    instances = load_instances(index_path)
+    instances = load_instances(index_path, top_n=args.top_n, words=args.words, max_per_gloss=args.max_per_gloss)
 
     if args.youtube_only:
         instances = [i for i in instances if is_youtube(i["url"])]
