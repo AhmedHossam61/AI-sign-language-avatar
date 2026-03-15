@@ -1,21 +1,17 @@
 /**
  * avatar_animator.js
  *
- * Drives a Three.js skeleton from MediaPipe landmark data.
+ * Drives a 3-D stick-figure avatar from MediaPipe landmark data.
  *
- * MediaPipe gives us 3-D POSITIONS for each joint.  To drive a rigged avatar
- * we need ROTATIONS.  For MVP we use a simple two-bone FK approach:
- *   • For each limb segment (upper-arm, lower-arm, etc.) we compute the
- *     direction vector between the two endpoint landmarks and rotate the bone
- *     so its local +Y axis aligns with that direction.
- *   • Hand finger joints are applied similarly.
+ * The figure uses:
+ *   • Cylinder meshes for limb segments (thick, easy to read)
+ *   • Sphere meshes for joints
+ *   • A sphere for the head
+ *   • Color-coded sides: blue = left, orange = right, white = centre
+ *   • Fingers drawn on each hand when landmarks are present
  *
- * The avatar is expected to be a Ready Player Me (or Mixamo) GLB with standard
- * bone names (Hips, Spine, Spine1, Spine2, Neck, Head,
- * LeftUpperArm, LeftLowerArm, LeftHand, RightUpperArm, …).
- *
- * If no GLB is loaded the animator falls back to drawing the skeleton as a
- * THREE.SkeletonHelper wire-frame so you can verify data without an avatar.
+ * If a GLB avatar URL is supplied the animator will also try to drive it
+ * via FK bone rotations (optional upgrade path).
  */
 
 import * as THREE from "three";
@@ -24,184 +20,204 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 // ─── MediaPipe pose landmark indices ────────────────────────────────────────
 const MP = {
   NOSE: 0,
-  LEFT_SHOULDER: 11,  RIGHT_SHOULDER: 12,
-  LEFT_ELBOW: 13,     RIGHT_ELBOW: 14,
-  LEFT_WRIST: 15,     RIGHT_WRIST: 16,
-  LEFT_HIP: 23,       RIGHT_HIP: 24,
-  LEFT_KNEE: 25,      RIGHT_KNEE: 26,
-  LEFT_ANKLE: 27,     RIGHT_ANKLE: 28,
+  LEFT_EYE: 2,         RIGHT_EYE: 5,
+  LEFT_EAR: 7,         RIGHT_EAR: 8,
+  LEFT_SHOULDER: 11,   RIGHT_SHOULDER: 12,
+  LEFT_ELBOW: 13,      RIGHT_ELBOW: 14,
+  LEFT_WRIST: 15,      RIGHT_WRIST: 16,
+  LEFT_HIP: 23,        RIGHT_HIP: 24,
+  LEFT_KNEE: 25,       RIGHT_KNEE: 26,
+  LEFT_ANKLE: 27,      RIGHT_ANKLE: 28,
 };
 
-// ─── MediaPipe hand landmark indices ────────────────────────────────────────
-const MH = {
-  WRIST: 0,
-  INDEX_MCP: 5, INDEX_PIP: 6,  INDEX_DIP: 7,  INDEX_TIP: 8,
-  MIDDLE_MCP: 9, MIDDLE_PIP: 10, MIDDLE_DIP: 11, MIDDLE_TIP: 12,
-  RING_MCP: 13,  RING_PIP: 14,  RING_DIP: 15,  RING_TIP: 16,
-  PINKY_MCP: 17, PINKY_PIP: 18, PINKY_DIP: 19, PINKY_TIP: 20,
-  THUMB_CMC: 1,  THUMB_MCP: 2,  THUMB_IP: 3,   THUMB_TIP: 4,
+// ─── Colour palette ──────────────────────────────────────────────────────────
+const COLOR = {
+  left:   0x4f8ef7,   // blue
+  right:  0xf97316,   // orange
+  centre: 0xe2e8f0,   // near-white
+  head:   0xfbbf24,   // amber
+  joint:  0xffffff,
+  fingerLeft:  0x93c5fd,
+  fingerRight: 0xfcd34d,
 };
 
-// Bone name → [parent landmark index, child landmark index, hand side]
-// "side" is null for pose bones, "left"/"right" for hand bones.
-const BONE_SEGMENTS = [
-  // Torso
-  { bone: "Spine",        from: [MP.LEFT_HIP, MP.RIGHT_HIP], to: [MP.LEFT_SHOULDER, MP.RIGHT_SHOULDER], midpoint: true },
-  // Arms
-  { bone: "LeftUpperArm",  from: MP.LEFT_SHOULDER,  to: MP.LEFT_ELBOW },
-  { bone: "LeftLowerArm",  from: MP.LEFT_ELBOW,     to: MP.LEFT_WRIST },
-  { bone: "RightUpperArm", from: MP.RIGHT_SHOULDER, to: MP.RIGHT_ELBOW },
-  { bone: "RightLowerArm", from: MP.RIGHT_ELBOW,    to: MP.RIGHT_WRIST },
-  // Legs
-  { bone: "LeftUpperLeg",  from: MP.LEFT_HIP,       to: MP.LEFT_KNEE },
-  { bone: "LeftLowerLeg",  from: MP.LEFT_KNEE,       to: MP.LEFT_ANKLE },
-  { bone: "RightUpperLeg", from: MP.RIGHT_HIP,      to: MP.RIGHT_KNEE },
-  { bone: "RightLowerLeg", from: MP.RIGHT_KNEE,      to: MP.RIGHT_ANKLE },
+// ─── Segment definitions [fromIdx, toIdx, colorKey] ─────────────────────────
+const POSE_SEGMENTS = [
+  // Centre body
+  [MP.LEFT_SHOULDER,  MP.RIGHT_SHOULDER, "centre"],
+  [MP.LEFT_HIP,       MP.RIGHT_HIP,      "centre"],
+  // Spine (we synthesise midpoints in code)
+  // Left arm
+  [MP.LEFT_SHOULDER,  MP.LEFT_ELBOW,     "left"],
+  [MP.LEFT_ELBOW,     MP.LEFT_WRIST,     "left"],
+  // Right arm
+  [MP.RIGHT_SHOULDER, MP.RIGHT_ELBOW,    "right"],
+  [MP.RIGHT_ELBOW,    MP.RIGHT_WRIST,    "right"],
+  // Torso sides
+  [MP.LEFT_SHOULDER,  MP.LEFT_HIP,       "left"],
+  [MP.RIGHT_SHOULDER, MP.RIGHT_HIP,      "right"],
+  // Left leg
+  [MP.LEFT_HIP,       MP.LEFT_KNEE,      "left"],
+  [MP.LEFT_KNEE,      MP.LEFT_ANKLE,     "left"],
+  // Right leg
+  [MP.RIGHT_HIP,      MP.RIGHT_KNEE,     "right"],
+  [MP.RIGHT_KNEE,     MP.RIGHT_ANKLE,    "right"],
 ];
 
-// Helper: average of multiple landmark positions.
-function midpoint(positions) {
-  const sum = positions.reduce(
-    (acc, p) => [acc[0] + p[0], acc[1] + p[1], acc[2] + p[2]],
-    [0, 0, 0]
+// Hand finger chains (landmark index pairs)
+const FINGER_CHAINS = [
+  [0, 1, 2, 3, 4],       // thumb
+  [0, 5, 6, 7, 8],       // index
+  [0, 9, 10, 11, 12],    // middle
+  [0, 13, 14, 15, 16],   // ring
+  [0, 17, 18, 19, 20],   // pinky
+];
+
+// ─── Geometry helpers ────────────────────────────────────────────────────────
+
+/** Create a cylinder mesh between two THREE.Vector3 points. */
+function makeCylinder(color, radius = 0.04) {
+  const mat = new THREE.MeshPhongMaterial({ color, shininess: 40 });
+  const geo = new THREE.CylinderGeometry(radius, radius, 1, 8, 1);
+  const mesh = new THREE.Mesh(geo, mat);
+  return mesh;
+}
+
+/** Update an existing cylinder to stretch between points A and B. */
+function updateCylinder(mesh, a, b) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  if (len < 1e-5) { mesh.visible = false; return; }
+  mesh.visible = true;
+  mesh.scale.y = len;
+  mesh.position.copy(a).addScaledVector(dir.normalize(), len / 2);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+}
+
+function makeSphere(color, radius = 0.055) {
+  const mat = new THREE.MeshPhongMaterial({ color, shininess: 60 });
+  const geo = new THREE.SphereGeometry(radius, 10, 10);
+  return new THREE.Mesh(geo, mat);
+}
+
+// ─── Coordinate conversion ───────────────────────────────────────────────────
+// MediaPipe: x right (0→1), y down (0→1), z depth relative to hip.
+// Three.js: x right, y up, z toward viewer.
+// We scale so the figure is roughly 2 units tall.
+const SCALE = 3.5;
+
+function mpToV3([x, y, z]) {
+  return new THREE.Vector3(
+    (x - 0.5) * SCALE,
+    -(y - 0.5) * SCALE + 0.5,
+    -z * SCALE * 0.3         // depth is compressed for readability
   );
-  return sum.map((v) => v / positions.length);
 }
 
-// Rotate bone so its +Y local axis points along `direction`.
-function alignBoneToDirection(bone, direction, restQuaternion) {
-  const dir = new THREE.Vector3(...direction).normalize();
-  if (dir.lengthSq() < 1e-6) return;
+// ─── Build the stick figure ──────────────────────────────────────────────────
+function buildStickFigure(scene) {
+  const group = new THREE.Group();
+  scene.add(group);
 
-  // Bone rest orientation: +Y is "along the limb".
-  const up = new THREE.Vector3(0, 1, 0);
-  const q = new THREE.Quaternion().setFromUnitVectors(up, dir);
+  // Head sphere
+  const head = makeSphere(COLOR.head, 0.14);
+  group.add(head);
 
-  // Compose with rest quaternion so we respect the rig's bind pose.
-  bone.quaternion.copy(restQuaternion).premultiply(q);
-}
+  // Spine cylinder (shoulder-midpoint → hip-midpoint)
+  const spine = makeCylinder(COLOR.centre, 0.045);
+  group.add(spine);
 
-// ─── Fallback dot/line skeleton renderer (no GLB needed) ────────────────────
-function buildFallbackSkeleton(scene) {
-  const joints = {};
-  const geo = new THREE.SphereGeometry(0.02, 6, 6);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x4f8ef7 });
-
-  // 33 pose joints + 21 left + 21 right
-  const totalJoints = 33 + 21 + 21;
-  for (let i = 0; i < totalJoints; i++) {
-    const mesh = new THREE.Mesh(geo, mat);
-    scene.add(mesh);
-    joints[i] = mesh;
-  }
-
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x8892a4 });
-  const connections = [
-    [MP.LEFT_SHOULDER, MP.RIGHT_SHOULDER],
-    [MP.LEFT_SHOULDER, MP.LEFT_ELBOW],
-    [MP.LEFT_ELBOW, MP.LEFT_WRIST],
-    [MP.RIGHT_SHOULDER, MP.RIGHT_ELBOW],
-    [MP.RIGHT_ELBOW, MP.RIGHT_WRIST],
-    [MP.LEFT_HIP, MP.RIGHT_HIP],
-    [MP.LEFT_HIP, MP.LEFT_KNEE],
-    [MP.LEFT_KNEE, MP.LEFT_ANKLE],
-    [MP.RIGHT_HIP, MP.RIGHT_KNEE],
-    [MP.RIGHT_KNEE, MP.RIGHT_ANKLE],
-    [MP.LEFT_SHOULDER, MP.LEFT_HIP],
-    [MP.RIGHT_SHOULDER, MP.RIGHT_HIP],
-  ];
-
-  const lines = connections.map(([a, b]) => {
-    const points = [new THREE.Vector3(), new THREE.Vector3()];
-    const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
-    const line = new THREE.Line(lineGeo, lineMat);
-    scene.add(line);
-    return { line, a, b };
+  // Pose limb cylinders
+  const poseCylinders = POSE_SEGMENTS.map(([, , colorKey]) => {
+    const cyl = makeCylinder(COLOR[colorKey]);
+    group.add(cyl);
+    return cyl;
   });
 
-  return { joints, lines };
+  // Joint spheres for key landmarks
+  const KEY_JOINTS = [
+    MP.LEFT_SHOULDER, MP.RIGHT_SHOULDER,
+    MP.LEFT_ELBOW,    MP.RIGHT_ELBOW,
+    MP.LEFT_WRIST,    MP.RIGHT_WRIST,
+    MP.LEFT_HIP,      MP.RIGHT_HIP,
+    MP.LEFT_KNEE,     MP.RIGHT_KNEE,
+    MP.LEFT_ANKLE,    MP.RIGHT_ANKLE,
+  ];
+  const jointSpheres = {};
+  KEY_JOINTS.forEach((idx) => {
+    const col = [MP.LEFT_SHOULDER,MP.LEFT_ELBOW,MP.LEFT_WRIST,MP.LEFT_HIP,MP.LEFT_KNEE,MP.LEFT_ANKLE].includes(idx)
+      ? COLOR.left : COLOR.right;
+    const s = makeSphere(col, 0.055);
+    group.add(s);
+    jointSpheres[idx] = s;
+  });
+
+  // Hand finger cylinders — 5 fingers × 4 segments × 2 hands = 40
+  function buildHandCylinders(colorKey) {
+    return FINGER_CHAINS.map((chain) =>
+      chain.slice(0, -1).map(() => {
+        const c = makeCylinder(COLOR[colorKey], 0.018);
+        group.add(c);
+        return c;
+      })
+    );
+  }
+  const leftFingers  = buildHandCylinders("fingerLeft");
+  const rightFingers = buildHandCylinders("fingerRight");
+
+  return { group, head, spine, poseCylinders, jointSpheres, leftFingers, rightFingers };
 }
 
 // ─── Main animator class ─────────────────────────────────────────────────────
 export class AvatarAnimator {
-  /**
-   * @param {THREE.Scene} scene
-   * @param {string|null} avatarUrl  URL to a GLB avatar, or null for wire-frame.
-   */
   constructor(scene, avatarUrl = null) {
-    this._scene = scene;
-    this._bones = {};           // boneName → THREE.Bone
-    this._restQuats = {};       // boneName → original quaternion clone
-    this._fallback = null;      // fallback skeleton meshes
-    this._frames = [];
+    this._scene    = scene;
+    this._figure   = buildStickFigure(scene);
+    this._frames   = [];
     this._currentFrame = 0;
-    this._fps = 30;
-    this._playing = false;
-    this._elapsed = 0;
+    this._fps      = 30;
+    this._playing  = false;
+    this._elapsed  = 0;
     this._onComplete = null;
 
-    if (avatarUrl) {
-      this._loadGLB(avatarUrl);
-    } else {
-      this._fallback = buildFallbackSkeleton(scene);
-    }
+    // Optional GLB overlay (bones driven on top of stick figure)
+    this._bones    = {};
+    this._restQuats = {};
+    if (avatarUrl) this._loadGLB(avatarUrl);
   }
 
   _loadGLB(url) {
-    const loader = new GLTFLoader();
-    loader.load(
-      url,
-      (gltf) => {
-        this._scene.add(gltf.scene);
-        gltf.scene.traverse((obj) => {
-          if (obj.isBone || (obj.isObject3D && obj.name)) {
-            this._bones[obj.name] = obj;
-            this._restQuats[obj.name] = obj.quaternion.clone();
-          }
-        });
-      },
-      undefined,
-      (err) => console.warn("GLB load error:", err)
-    );
+    new GLTFLoader().load(url, (gltf) => {
+      this._scene.add(gltf.scene);
+      gltf.scene.traverse((obj) => {
+        if (obj.isBone) {
+          this._bones[obj.name] = obj;
+          this._restQuats[obj.name] = obj.quaternion.clone();
+        }
+      });
+    });
   }
 
-  /** Load a new animation and start playing. */
   loadAnimation(animationData, onComplete = null) {
-    this._frames = animationData.frames ?? [];
-    this._fps = animationData.fps ?? 30;
+    this._frames   = animationData.frames ?? [];
+    this._fps      = animationData.fps ?? 30;
     this._currentFrame = 0;
-    this._elapsed = 0;
-    this._playing = this._frames.length > 0;
+    this._elapsed  = 0;
+    this._playing  = this._frames.length > 0;
     this._onComplete = onComplete;
   }
 
-  stop() {
-    this._playing = false;
-  }
-
-  replay() {
-    this._currentFrame = 0;
-    this._elapsed = 0;
-    this._playing = this._frames.length > 0;
-  }
+  stop()   { this._playing = false; }
+  replay() { this._currentFrame = 0; this._elapsed = 0; this._playing = this._frames.length > 0; }
 
   get isPlaying() { return this._playing; }
-  get progress() {
-    if (!this._frames.length) return 0;
-    return this._currentFrame / this._frames.length;
-  }
+  get progress()  { return this._frames.length ? this._currentFrame / this._frames.length : 0; }
 
-  /**
-   * Call every animation frame from the render loop.
-   * @param {number} delta  seconds since last frame (from THREE.Clock)
-   * @param {number} speed  playback multiplier (1 = normal)
-   */
   update(delta, speed = 1) {
     if (!this._playing || !this._frames.length) return;
 
     this._elapsed += delta * speed;
-    const frameFloat = this._elapsed * this._fps;
-    this._currentFrame = Math.floor(frameFloat);
+    this._currentFrame = Math.floor(this._elapsed * this._fps);
 
     if (this._currentFrame >= this._frames.length) {
       this._currentFrame = this._frames.length - 1;
@@ -214,88 +230,57 @@ export class AvatarAnimator {
   }
 
   _applyFrame(frame) {
-    if (this._fallback) {
-      this._applyFallback(frame);
-    } else {
-      this._applyBones(frame);
-    }
-  }
-
-  // ── Fallback wire-frame renderer ─────────────────────────────────────────
-  _applyFallback(frame) {
     const pose = frame.pose;
     const lh   = frame.left_hand;
     const rh   = frame.right_hand;
-    const { joints, lines } = this._fallback;
+    const { head, spine, poseCylinders, jointSpheres, leftFingers, rightFingers } = this._figure;
 
-    // MediaPipe coords: x right, y down, z toward camera (NDC-ish, ~0-1).
-    // Map to Three.js: x right, y up, z toward viewer.
-    const toV3 = ([x, y, z]) => new THREE.Vector3(
-      (x - 0.5) * 2,
-      -(y - 0.5) * 2,
-      -z
-    );
+    if (!pose) return;
 
-    if (pose) {
-      pose.forEach((lm, i) => {
-        if (joints[i]) joints[i].position.copy(toV3(lm));
+    // Convert all pose landmarks to Three.js vectors
+    const pv = pose.map(mpToV3);
+
+    // ── Head: position above nose using ear/shoulder scale ──────────────────
+    if (pv[MP.NOSE]) {
+      head.position.copy(pv[MP.NOSE]);
+      // Estimate head radius from shoulder width
+      const sw = pv[MP.LEFT_SHOULDER].distanceTo(pv[MP.RIGHT_SHOULDER]);
+      const r = Math.max(0.10, Math.min(sw * 0.35, 0.20));
+      head.scale.setScalar(r / 0.14);
+    }
+
+    // ── Spine ────────────────────────────────────────────────────────────────
+    const shoulderMid = new THREE.Vector3()
+      .addVectors(pv[MP.LEFT_SHOULDER], pv[MP.RIGHT_SHOULDER]).multiplyScalar(0.5);
+    const hipMid = new THREE.Vector3()
+      .addVectors(pv[MP.LEFT_HIP], pv[MP.RIGHT_HIP]).multiplyScalar(0.5);
+    updateCylinder(spine, hipMid, shoulderMid);
+
+    // ── Pose limb segments ───────────────────────────────────────────────────
+    POSE_SEGMENTS.forEach(([fromIdx, toIdx], i) => {
+      updateCylinder(poseCylinders[i], pv[fromIdx], pv[toIdx]);
+    });
+
+    // ── Joint spheres ────────────────────────────────────────────────────────
+    Object.entries(jointSpheres).forEach(([idx, mesh]) => {
+      if (pv[idx]) mesh.position.copy(pv[idx]);
+    });
+
+    // ── Hands ────────────────────────────────────────────────────────────────
+    function applyHand(landmarks, fingerCyls) {
+      if (!landmarks) {
+        fingerCyls.forEach((chain) => chain.forEach((c) => (c.visible = false)));
+        return;
+      }
+      const hv = landmarks.map(mpToV3);
+      FINGER_CHAINS.forEach((chain, fi) => {
+        for (let si = 0; si < chain.length - 1; si++) {
+          updateCylinder(fingerCyls[fi][si], hv[chain[si]], hv[chain[si + 1]]);
+        }
       });
     }
 
-    // Hand joints: offset 33 (left) and 54 (right).
-    if (lh) lh.forEach((lm, i) => {
-      const j = joints[33 + i];
-      if (j) j.position.copy(toV3(lm));
-    });
-    if (rh) rh.forEach((lm, i) => {
-      const j = joints[54 + i];
-      if (j) j.position.copy(toV3(lm));
-    });
-
-    // Update line geometries.
-    lines.forEach(({ line, a, b }) => {
-      if (!pose || !pose[a] || !pose[b]) return;
-      const positions = line.geometry.attributes.position;
-      const va = toV3(pose[a]);
-      const vb = toV3(pose[b]);
-      positions.setXYZ(0, va.x, va.y, va.z);
-      positions.setXYZ(1, vb.x, vb.y, vb.z);
-      positions.needsUpdate = true;
-    });
-  }
-
-  // ── GLB bone driver ──────────────────────────────────────────────────────
-  _applyBones(frame) {
-    const pose = frame.pose;
-    if (!pose) return;
-
-    for (const seg of BONE_SEGMENTS) {
-      const bone = this._bones[seg.bone];
-      if (!bone) continue;
-
-      let fromPos, toPos;
-      if (seg.midpoint) {
-        fromPos = midpoint(
-          (Array.isArray(seg.from[0]) ? seg.from : [seg.from]).map((i) => pose[i])
-        );
-        toPos = midpoint(
-          (Array.isArray(seg.to[0]) ? seg.to : [seg.to]).map((i) => pose[i])
-        );
-      } else {
-        fromPos = pose[seg.from];
-        toPos   = pose[seg.to];
-      }
-
-      if (!fromPos || !toPos) continue;
-      const dir = [toPos[0] - fromPos[0], -(toPos[1] - fromPos[1]), toPos[2] - fromPos[2]];
-      alignBoneToDirection(bone, dir, this._restQuats[seg.bone] ?? new THREE.Quaternion());
-    }
-
-    // Hips position (root translation).
-    const hipsBone = this._bones["Hips"] ?? this._bones["mixamorigHips"];
-    if (hipsBone && pose[MP.LEFT_HIP] && pose[MP.RIGHT_HIP]) {
-      const hp = midpoint([pose[MP.LEFT_HIP], pose[MP.RIGHT_HIP]]);
-      hipsBone.position.set((hp[0] - 0.5) * 2, -(hp[1] - 0.5) * 2 + 1, -hp[2]);
-    }
+    applyHand(lh, leftFingers);
+    applyHand(rh, rightFingers);
   }
 }

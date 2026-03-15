@@ -25,18 +25,21 @@ const scene  = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1d27);
 
 const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
-camera.position.set(0, 1.2, 3.5);
+camera.position.set(0, 0.5, 4.5);
 
 const controls = new OrbitControls(camera, canvas);
-controls.target.set(0, 1.0, 0);
+controls.target.set(0, 0.2, 0);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 
 // Lighting
-scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
-dirLight.position.set(2, 4, 3);
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+dirLight.position.set(2, 5, 4);
 scene.add(dirLight);
+const fillLight = new THREE.DirectionalLight(0x8892a4, 0.5);
+fillLight.position.set(-3, 2, -2);
+scene.add(fillLight);
 
 // Ground grid (subtle reference plane)
 const grid = new THREE.GridHelper(4, 20, 0x2e3347, 0x2e3347);
