@@ -1,85 +1,120 @@
 /**
- * main.js — Three.js scene setup + UI wiring.
+ * main.js — Babylon.js scene setup + UI wiring.
  *
  * Ties together:
- *   - Three.js renderer / camera / lighting
+ *   - Babylon.js Engine / Scene / Camera / Lighting  (replaces Three.js)
  *   - AvatarAnimator (avatar_animator.js)
  *   - fetchAnimation (api_client.js)
+ *
+ * BABYLON is a global loaded from the CDN <script> tag in index.html.
  */
 
-import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { AvatarAnimator } from "./avatar_animator.js";
-import { fetchAnimation } from "./api_client.js";
+import { fetchAnimation }  from "./api_client.js";
 
-// ─── Scene setup ─────────────────────────────────────────────────────────────
-const canvas    = document.getElementById("three-canvas");
-const container = document.getElementById("canvas-container");
-const overlay   = document.getElementById("status-overlay");
+// ─── Canvas + Engine ─────────────────────────────────────────────────────────
+const canvas = document.getElementById("render-canvas");
 
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-renderer.setPixelRatio(window.devicePixelRatio);
-renderer.outputColorSpace = THREE.SRGBColorSpace;
+const engine = new BABYLON.Engine(canvas, /* antialias */ true, {
+  preserveDrawingBuffer: true,
+  stencil: true,
+});
 
-const scene  = new THREE.Scene();
-scene.background = new THREE.Color(0x1a1d27);
+// ─── Scene ───────────────────────────────────────────────────────────────────
+const scene = new BABYLON.Scene(engine);
+scene.clearColor = new BABYLON.Color4(0.102, 0.114, 0.153, 1); // #1a1d27
 
-const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
-camera.position.set(0, 0.5, 4.5);
+// ─── Camera (Arc-Rotate — drag to orbit, scroll to zoom) ─────────────────────
+const camera = new BABYLON.ArcRotateCamera(
+  "cam",
+  -Math.PI / 2,   // alpha: look from front
+  Math.PI / 3,    // beta:  slightly above eye level
+  3.5,            // radius
+  new BABYLON.Vector3(0, 1.1, 0), // target: roughly the avatar's chest
+  scene
+);
+camera.attachControl(canvas, true);
+camera.lowerRadiusLimit  = 0.8;
+camera.upperRadiusLimit  = 8;
+camera.lowerBetaLimit    = 0.1;
+camera.upperBetaLimit    = Math.PI / 1.8;
+camera.wheelDeltaPercentage = 0.01;
 
-const controls = new OrbitControls(camera, canvas);
-controls.target.set(0, 0.2, 0);
-controls.enableDamping = true;
-controls.dampingFactor = 0.08;
+// ─── Lighting ─────────────────────────────────────────────────────────────────
+// Soft ambient dome
+const hemi = new BABYLON.HemisphericLight(
+  "hemi",
+  new BABYLON.Vector3(0, 1, 0),
+  scene
+);
+hemi.intensity      = 0.75;
+hemi.groundColor    = new BABYLON.Color3(0.15, 0.15, 0.2);
 
-// Lighting
-scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
-dirLight.position.set(2, 5, 4);
-scene.add(dirLight);
-const fillLight = new THREE.DirectionalLight(0x8892a4, 0.5);
-fillLight.position.set(-3, 2, -2);
-scene.add(fillLight);
+// Key light (front-left, slightly high)
+const keyLight = new BABYLON.DirectionalLight(
+  "key",
+  new BABYLON.Vector3(-0.5, -1, -0.8),
+  scene
+);
+keyLight.intensity  = 1.2;
+keyLight.position   = new BABYLON.Vector3(3, 6, 4);
 
-// Ground grid (subtle reference plane)
-const grid = new THREE.GridHelper(4, 20, 0x2e3347, 0x2e3347);
-grid.position.y = -0.01;
-scene.add(grid);
+// Rim / fill light (back-right)
+const fillLight = new BABYLON.DirectionalLight(
+  "fill",
+  new BABYLON.Vector3(1, -0.5, 0.5),
+  scene
+);
+fillLight.intensity = 0.4;
+fillLight.diffuse   = new BABYLON.Color3(0.6, 0.7, 1.0); // cool blue fill
 
-// ─── Avatar animator ─────────────────────────────────────────────────────────
-// To use a GLB avatar: pass the URL as the second argument, e.g.
-//   const animator = new AvatarAnimator(scene, "assets/avatar.glb");
-// For now we use the wire-frame fallback (null → no GLB needed).
-const animator = new AvatarAnimator(scene, null);
+// ─── Ground grid (subtle reference plane) ─────────────────────────────────────
+const ground = BABYLON.MeshBuilder.CreateGround(
+  "ground",
+  { width: 4, height: 4, subdivisions: 20 },
+  scene
+);
+const groundMat = new BABYLON.GridMaterial
+  ? (() => {
+      const m = new BABYLON.GridMaterial("gridMat", scene);
+      m.gridRatio          = 0.2;
+      m.majorUnitFrequency = 5;
+      m.minorUnitVisibility = 0.2;
+      m.mainColor          = new BABYLON.Color3(0.18, 0.20, 0.28);
+      m.lineColor          = new BABYLON.Color3(0.25, 0.28, 0.38);
+      m.backFaceCulling    = false;
+      return m;
+    })()
+  : (() => {
+      const m = new BABYLON.StandardMaterial("groundMat", scene);
+      m.diffuseColor  = new BABYLON.Color3(0.15, 0.17, 0.22);
+      m.specularColor = BABYLON.Color3.Black();
+      return m;
+    })();
+ground.material = groundMat;
 
-setStatus("Enter a sentence above and click \"Sign it\".");
-
-// ─── Resize handler ───────────────────────────────────────────────────────────
-function resize() {
-  const w = container.clientWidth;
-  const h = container.clientHeight;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-}
-resize();
-new ResizeObserver(resize).observe(container);
+// ─── Avatar animator ──────────────────────────────────────────────────────────
+const animator = new AvatarAnimator(scene, "assets/avatar.glb");
+setStatus("Loading avatar…");
+animator.onReady = () => setStatus('Enter a sentence above and click "Sign it".');
+animator.onError = (msg) => setStatus(`⚠ ${msg}`);
 
 // ─── Render loop ──────────────────────────────────────────────────────────────
-const clock = new THREE.Clock();
-
-(function animate() {
-  requestAnimationFrame(animate);
-  const delta = clock.getDelta();
-  controls.update();
+engine.runRenderLoop(() => {
+  const delta = engine.getDeltaTime() / 1000; // ms → seconds
   animator.update(delta, currentSpeed());
-  renderer.render(scene, camera);
-})();
+  scene.render();
+});
+
+// ─── Resize ───────────────────────────────────────────────────────────────────
+window.addEventListener("resize", () => engine.resize());
 
 // ─── UI helpers ───────────────────────────────────────────────────────────────
+const overlay = document.getElementById("status-overlay");
+
 function setStatus(msg) {
-  overlay.textContent = msg;
-  overlay.style.display = msg ? "block" : "none";
+  overlay.textContent    = msg;
+  overlay.style.display  = msg ? "block" : "none";
 }
 
 function currentSpeed() {
@@ -87,7 +122,7 @@ function currentSpeed() {
 }
 
 function showGloss(glossesUsed, glossesUnknown) {
-  const container = document.getElementById("gloss-display");
+  const container  = document.getElementById("gloss-display");
   const unknownSet = new Set(glossesUnknown);
   container.innerHTML = glossesUsed
     .map((g) => {
@@ -106,7 +141,7 @@ signBtn.addEventListener("click", async () => {
   const text = textarea.value.trim();
   if (!text) return;
 
-  signBtn.disabled = true;
+  signBtn.disabled  = true;
   replayBtn.disabled = true;
   setStatus("⏳ Fetching animation…");
   document.getElementById("gloss-display").innerHTML = "";
@@ -126,7 +161,7 @@ signBtn.addEventListener("click", async () => {
   }
 });
 
-// Allow pressing Enter (without Shift) to submit.
+// Enter (without Shift) submits.
 textarea.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -139,7 +174,6 @@ replayBtn.addEventListener("click", () => {
   animator.replay();
   setStatus("");
   replayBtn.disabled = true;
-  // Re-enable replay when done.
   const wait = setInterval(() => {
     if (!animator.isPlaying) {
       clearInterval(wait);

@@ -32,20 +32,31 @@
     </div>
 
     <div id="canvas-container">
-      <canvas id="three-canvas"></canvas>
+      <!--
+        Place your Mixamo avatar at:  frontend/assets/avatar.glb
+
+        To get one (free):
+          1. Go to https://www.mixamo.com  (free Adobe account)
+          2. Pick any humanoid character (e.g. "Y Bot" or "X Bot")
+          3. Click Download → Format: FBX, Pose: T-Pose
+          4. Open in Blender → File > Import > FBX
+             then File > Export > glTF 2.0 (.glb) → save as avatar.glb
+          5. Copy avatar.glb to  frontend/assets/avatar.glb
+
+        Bone names (LeftArm, LeftForeArm, LeftHandIndex1 …) are standard
+        Mixamo — no code changes needed.
+
+        If avatar.glb is missing, the app falls back to a stick figure.
+      -->
+      <canvas id="render-canvas"></canvas>
       <div id="status-overlay"></div>
     </div>
   </div>
 
-  <!-- Three.js r165 via CDN — no build step required -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
-    }
-  }
-  </script>
+  <!-- Babylon.js 7 core — no build step required -->
+  <script src="https://cdn.babylonjs.com/babylon.js"></script>
+  <!-- GLTF/GLB loader (must come after babylon.js) -->
+  <script src="https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"></script>
 
   <script type="module" src="main.js"></script>
 </body>

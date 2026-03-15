@@ -27,11 +27,11 @@ flowchart TD
         GC --> MS --> API
     end
 
-    subgraph Frontend ["Frontend — Three.js r165 via CDN (localhost:5173)"]
-        HC["index.html\nimportmap → CDN\nno build step"]
+    subgraph Frontend ["Frontend — Babylon.js 7 via CDN (localhost:5173)"]
+        HC["index.html\nBabylon.js CDN scripts\nno build step"]
         AC["api_client.js\nfetch POST /api/sign"]
-        AA["avatar_animator.js\nbone mapping\nupdate loop"]
-        UI["Browser\n3D avatar + speed slider\ngloss display + replay"]
+        AA["avatar_animator.js\nReady Player Me GLB\nBoneIKController — arms\nFK curl — fingers\nstick-figure fallback"]
+        UI["Browser\nRPM 3D avatar + speed slider\ngloss display + replay"]
         HC --> AC --> AA --> UI
     end
 
@@ -50,10 +50,10 @@ flowchart TD
 | `backend/gloss_converter.py` | English → ASL gloss | Rule-based; uses spaCy if installed, regex fallback otherwise |
 | `backend/motion_sequencer.py` | Clip stitching | Linear blend transitions; fingerspell fallback for unknown tokens |
 | `backend/main.py` | FastAPI server | `/api/health`, `/api/glosses`, `/api/sign` |
-| `frontend/avatar_animator.js` | Bone animation | MediaPipe landmark index → Three.js bone position |
+| `frontend/avatar_animator.js` | Bone animation | Babylon.js: BoneIKController for arms, FK curl for fingers, spine/head FK |
 | `frontend/api_client.js` | API bridge | `fetch` to `localhost:8000/api/sign` |
-| `frontend/main.js` | Three.js scene | Camera, lighting, render loop, speed control |
-| `frontend/index.html` | Entry point | importmap loads Three.js r165 from CDN — no npm needed |
+| `frontend/main.js` | Babylon.js scene | Engine, ArcRotateCamera, lighting, render loop, speed control |
+| `frontend/index.html` | Entry point | Babylon.js 7 loaded from CDN — no npm or build step needed |
 
 ### What is NOT yet implemented (planned in later phases)
 
@@ -128,9 +128,31 @@ curl http://localhost:8000/api/health
 # {"status":"ok","motion_library_size":<N>}
 ```
 
-### 6 — Start the frontend
+### 6 — Download a Mixamo avatar
 
-No npm or build step — Three.js loads from CDN via importmap. You only need any static file server:
+The frontend uses a Babylon.js-powered Mixamo-rigged avatar. You need one `.glb` file.
+
+**Get the character (free):**
+1. Go to **[mixamo.com](https://www.mixamo.com)** → sign in with a free Adobe account.
+2. Pick any humanoid character (e.g. "Y Bot", "X Bot", or any human model).
+3. Click **Download** → Format: **FBX**, Pose: **T-Pose** (no animation needed).
+
+**Convert FBX → GLB with Blender (free):**
+```
+1. Open Blender → File → Import → FBX → select your downloaded file
+2. File → Export → glTF 2.0 (.glb/.gltf)
+   - Format: GLB
+   - Include: Armature ✓  Mesh ✓
+3. Save as  frontend/assets/avatar.glb
+```
+
+The bone names Mixamo uses (`LeftArm`, `LeftForeArm`, `LeftHandIndex1`, …) are exactly what `avatar_animator.js` targets — **no code changes needed**.
+
+> If `avatar.glb` is missing, the app automatically falls back to a blue stick figure so you can still test motion logic.
+
+### 7 — Start the frontend
+
+No npm or build step — Babylon.js loads from CDN. You only need any static file server:
 
 ```powershell
 # Option A — Python (simplest)
@@ -145,6 +167,8 @@ npx serve frontend -p 5173
 ```
 
 Open `http://localhost:5173`, type a sentence, click **Sign it ▶**.
+
+> The RPM avatar will appear in the centre of the viewport. Drag to orbit, scroll to zoom.
 
 ---
 
