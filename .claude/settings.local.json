@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c \"from backend.motion_sequencer import sequence_glosses; r = sequence_glosses\\([''HELLO'']\\); print\\(''frames:'', r[''num_frames'']\\)\")"
+    ]
+  }
+}

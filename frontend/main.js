@@ -74,27 +74,33 @@ const ground = BABYLON.MeshBuilder.CreateGround(
   { width: 4, height: 4, subdivisions: 20 },
   scene
 );
-const groundMat = new BABYLON.GridMaterial
-  ? (() => {
-      const m = new BABYLON.GridMaterial("gridMat", scene);
-      m.gridRatio          = 0.2;
-      m.majorUnitFrequency = 5;
-      m.minorUnitVisibility = 0.2;
-      m.mainColor          = new BABYLON.Color3(0.18, 0.20, 0.28);
-      m.lineColor          = new BABYLON.Color3(0.25, 0.28, 0.38);
-      m.backFaceCulling    = false;
-      return m;
-    })()
-  : (() => {
-      const m = new BABYLON.StandardMaterial("groundMat", scene);
-      m.diffuseColor  = new BABYLON.Color3(0.15, 0.17, 0.22);
-      m.specularColor = BABYLON.Color3.Black();
-      return m;
-    })();
+// Use GridMaterial if the materials library CDN script loaded it, else fallback.
+let groundMat;
+if (BABYLON.GridMaterial) {
+  groundMat = new BABYLON.GridMaterial("gridMat", scene);
+  groundMat.gridRatio           = 0.2;
+  groundMat.majorUnitFrequency  = 5;
+  groundMat.minorUnitVisibility = 0.2;
+  groundMat.mainColor           = new BABYLON.Color3(0.18, 0.20, 0.28);
+  groundMat.lineColor           = new BABYLON.Color3(0.25, 0.28, 0.38);
+  groundMat.backFaceCulling     = false;
+} else {
+  groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+  groundMat.diffuseColor  = new BABYLON.Color3(0.15, 0.17, 0.22);
+  groundMat.specularColor = BABYLON.Color3.Black();
+}
 ground.material = groundMat;
 
+// ─── UI helpers (declared before first use) ───────────────────────────────────
+const overlay = document.getElementById("status-overlay");
+
+function setStatus(msg) {
+  overlay.textContent   = msg;
+  overlay.style.display = msg ? "block" : "none";
+}
+
 // ─── Avatar animator ──────────────────────────────────────────────────────────
-const animator = new AvatarAnimator(scene, "assets/avatar.glb");
+const animator = new AvatarAnimator(scene, "assets/Untitled.glb");
 setStatus("Loading avatar…");
 animator.onReady = () => setStatus('Enter a sentence above and click "Sign it".');
 animator.onError = (msg) => setStatus(`⚠ ${msg}`);
@@ -108,14 +114,6 @@ engine.runRenderLoop(() => {
 
 // ─── Resize ───────────────────────────────────────────────────────────────────
 window.addEventListener("resize", () => engine.resize());
-
-// ─── UI helpers ───────────────────────────────────────────────────────────────
-const overlay = document.getElementById("status-overlay");
-
-function setStatus(msg) {
-  overlay.textContent    = msg;
-  overlay.style.display  = msg ? "block" : "none";
-}
 
 function currentSpeed() {
   return parseFloat(document.getElementById("speed-slider").value);
