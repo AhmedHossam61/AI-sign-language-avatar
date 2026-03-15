@@ -153,6 +153,7 @@ export class AvatarAnimator {
     this._bones      = {};
     this._restDirs   = {};   // boneName → rest-pose world direction (parent→child)
     this._stick      = null;
+    this._forceStickFigure = window.FORCE_STICK_DEBUG || false;  // For diagnostics
     this.onReady     = null;
     this.onError     = null;
 
@@ -186,6 +187,26 @@ export class AvatarAnimator {
         }
       }
 
+      let resolved = 0;
+      const missing = [];
+      for (const [k, v] of Object.entries(BONES)) {
+        const name = this._resolveBoneName(v);
+        if (name) {
+          BONES[k] = name;
+          resolved += 1;
+        } else {
+          missing.push(v);
+        }
+      }
+      console.log("[AvatarAnimator] Resolved bones:", resolved, "Missing:", missing.join(", "));
+
+      if (this._forceStickFigure) {
+        console.log("[AvatarAnimator] FORCE_STICK_DEBUG: ignoring rigged avatar, using stick figure");
+        this._stick = buildStickFigure(this._scene);
+        if (this.onReady) this.onReady();
+        return;
+      }
+
       // Capture rest-pose directions for FK chains.
       // In T-pose: upper arm points along ±X, forearm along ±X, legs along -Y.
       // We compute these from the actual bone positions in bind pose.
@@ -199,6 +220,27 @@ export class AvatarAnimator {
       this._stick = buildStickFigure(this._scene);
       if (this.onError) this.onError("Avatar not loaded — using stick figure fallback.");
     }
+  }
+
+  _resolveBoneName(target) {
+    if (!target) return null;
+    if (this._bones[target]) return target;
+
+    const names = Object.keys(this._bones);
+    const needle = target.toLowerCase();
+
+    let found = names.find((n) => n.toLowerCase() === needle);
+    if (found) return found;
+
+    // Common rig separators/prefixes: mixamorig:Head, Armature_Hips, etc.
+    const suffixes = [":" + needle, "_" + needle, "." + needle, "-" + needle];
+    found = names.find((n) => {
+      const low = n.toLowerCase();
+      return suffixes.some((s) => low.endsWith(s));
+    });
+    if (found) return found;
+
+    return names.find((n) => n.toLowerCase().endsWith(needle)) ?? null;
   }
 
   _captureRestDirections() {
@@ -216,19 +258,42 @@ export class AvatarAnimator {
       const bone = this._bones[boneName];
       if (!bone) continue;
 
-      // Find the first child bone
-      const children = bone.children.filter(c => c.name);
-      if (children.length > 0 && boneWorldPos[boneName] && boneWorldPos[children[0].name]) {
-        const dir = boneWorldPos[children[0].name].subtract(boneWorldPos[boneName]).normalize();
-        this._restDirs[boneName] = dir;
+      // Pick the furthest valid child (twist children can be nearly zero-length).
+      const parentPos = boneWorldPos[boneName];
+      const children = bone.children.filter(c => c.name && boneWorldPos[c.name]);
+      let bestDir = null;
+      let bestLen = 0;
+
+      for (const child of children) {
+        const dir = boneWorldPos[child.name].subtract(parentPos);
+        const len = dir.length();
+        if (len > bestLen) {
+          bestLen = len;
+          bestDir = dir;
+        }
+      }
+
+      if (bestDir && bestLen > 1e-5) {
+        this._restDirs[boneName] = bestDir.normalize();
       } else {
-        // Fallback: assume Y-up for spine/legs, ±X for arms
-        this._restDirs[boneName] = new BABYLON.Vector3(0, 1, 0);
+        this._restDirs[boneName] = this._defaultRestDir(key);
       }
     }
 
     console.log("[AvatarAnimator] Rest directions captured for",
       Object.keys(this._restDirs).length, "bones");
+  }
+
+  _defaultRestDir(key) {
+    if (key.includes("Arm") || key.includes("ForeArm")) {
+      return key.startsWith("right")
+        ? new BABYLON.Vector3(-1, 0, 0)
+        : new BABYLON.Vector3(1, 0, 0);
+    }
+    if (key.includes("Leg") || key.includes("UpLeg")) {
+      return new BABYLON.Vector3(0, -1, 0);
+    }
+    return new BABYLON.Vector3(0, 1, 0);
   }
 
   loadAnimation(data, onComplete = null) {
@@ -274,6 +339,18 @@ export class AvatarAnimator {
     if (this._stick) { this._stick.applyStick(frame); return; }
     if (!this._skeleton) return;
 
+    // DIAGNOSTIC: test if bone rotations even affect the mesh
+    if (window.AVATAR_TEST_BONE_ROTATION) {
+      const testBone = this._bones[BONES.rightArm];
+      if (testBone) {
+        const angle = (this._elapsed * 3) % (Math.PI * 2); // varies 0-2π
+        const testRot = BABYLON.Quaternion.FromEulerAngles(angle, 0, 0);
+        testBone.setRotationQuaternion(testRot, BABYLON.Space.LOCAL);
+        console.log("[AvatarAnimator] Test bone rotation applied: angle =", angle.toFixed(2));
+      }
+      return;
+    }
+
     const pv = frame.pose.map(toV3);
     this._driveFK(pv);
     this._driveSpineHead(pv);
@@ -281,6 +358,8 @@ export class AvatarAnimator {
 
   // ── FK: rotate each limb bone to match landmark direction ──────────────────
   _driveFK(pv) {
+    this._skeleton.computeAbsoluteTransforms();
+
     for (const [key, fromIdx, toIdx] of FK_CHAINS) {
       const boneName = BONES[key];
       const bone = this._bones[boneName];
@@ -298,24 +377,13 @@ export class AvatarAnimator {
       if (targetDir.lengthSquared() < 1e-6) continue;
 
       // Compute the rotation that turns the rest direction into the target direction.
-      // This must be in WORLD space since our directions are world-space vectors.
-      // Then we convert to LOCAL space by accounting for the parent's world rotation.
+      // This is in WORLD space because both directions are world-space vectors.
       const worldRot = rotateAtoB(restDir, targetDir);
 
-      // Get parent's world rotation
-      const parent = bone.getParent();
-      if (parent) {
-        const parentWorld = parent.getWorldMatrix();
-        const parentRot = BABYLON.Quaternion.FromRotationMatrix(
-          BABYLON.Matrix.FromArray(parentWorld.toArray()).getRotationMatrix()
-        );
-        // localRot = inverse(parentWorldRot) * worldRot
-        const parentInv = parentRot.clone().conjugateInPlace();
-        const localRot  = parentInv.multiply(worldRot);
-        bone.setRotationQuaternion(localRot, BABYLON.Space.LOCAL);
-      } else {
-        bone.setRotationQuaternion(worldRot, BABYLON.Space.LOCAL);
-      }
+      bone.setRotationQuaternion(worldRot, BABYLON.Space.WORLD, this._mesh);
+
+      // Keep absolute transforms fresh so child bones use updated parent orientation.
+      this._skeleton.computeAbsoluteTransforms();
     }
   }
 
@@ -330,7 +398,7 @@ export class AvatarAnimator {
     const spine2 = this._bones[BONES.spine2];
     if (spine2) {
       const q = rotateAtoB(restUp, spineDir);
-      spine2.setRotationQuaternion(q, BABYLON.Space.LOCAL);
+      spine2.setRotationQuaternion(q, BABYLON.Space.WORLD, this._mesh);
     }
 
     // Head: tilt toward nose
@@ -339,7 +407,7 @@ export class AvatarAnimator {
       const neckPos = shoulderMid.add(new BABYLON.Vector3(0, 0.1, 0));
       const headDir = pv[MP.NOSE].subtract(neckPos).normalize();
       const q = rotateAtoB(restUp, headDir);
-      headBone.setRotationQuaternion(q, BABYLON.Space.LOCAL);
+      headBone.setRotationQuaternion(q, BABYLON.Space.WORLD, this._mesh);
     }
   }
 }
