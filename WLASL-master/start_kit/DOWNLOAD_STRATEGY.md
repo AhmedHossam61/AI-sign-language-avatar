@@ -21,6 +21,10 @@ Download a small subset to establish the project structure quickly:
 
 ```powershell
 cd WLASL-master\start_kit
+
+# RECOMMENDED: Daily-use preset — ~100 common words, 5 videos each (survives corrupted files)
+python fast_video_downloader.py --index WLASL_v0.3.json --out raw_videos --workers 8 --retries 2 --nonyoutube-only --insecure --preset daily --max-per-gloss 5
+
 # Option A: Top 100 glosses, 2 videos each, non-YouTube only
 python fast_video_downloader.py --index WLASL_v0.3.json --out raw_videos --workers 8 --retries 1 --nonyoutube-only --insecure --top-n 100 --max-per-gloss 2
 
@@ -34,9 +38,12 @@ python fast_video_downloader.py --index WLASL_v0.3.json --out raw_videos --worke
 **New subset flags:**
 | Flag | Description |
 |------|-------------|
+| `--preset daily` | Built-in list of ~100 high-frequency daily signs (greetings, verbs, family, food, time, colours) |
 | `--top-n N` | Only download the first N glosses (words) from the JSON |
 | `--words W1 W2 ...` | Whitelist specific words by name (case-insensitive) |
-| `--max-per-gloss M` | Cap video instances per word (e.g. `2` means 2 videos per sign) |
+| `--max-per-gloss M` | Cap video instances per word — use 5+ to survive corrupted files |
+
+The `--preset daily` word list covers: greetings · yes/no · question words · family · core verbs · feelings · food/drink · time · colours · emergency vocab.
 
 These flags combine freely with `--youtube-only` / `--nonyoutube-only`.
 

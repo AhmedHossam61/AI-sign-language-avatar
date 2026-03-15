@@ -40,7 +40,34 @@ flowchart TD
 
 ### 1. Data Pipeline — Building the Sign Motion Library
 
-#### Step 1: Source ASL video datasets
+#### Step 1: Source ASL video datasets — **using WLASL daily-use subset**
+
+For MVP we use the **`--preset daily`** subset of WLASL: ~100 high-frequency everyday signs downloaded with redundancy (5 copies each) to survive corrupted files.
+
+**Download command** (run from `WLASL-master\start_kit\`):
+```powershell
+python fast_video_downloader.py `
+    --index WLASL_v0.3.json `
+    --out raw_videos `
+    --workers 8 --retries 2 `
+    --nonyoutube-only --insecure `
+    --preset daily --max-per-gloss 5
+```
+
+**`--preset daily` covers ~100 words across 6 categories:**
+
+| Category | Examples |
+|---|---|
+| Greetings / courtesy | hello, goodbye, please, thank, sorry, yes, no |
+| Question words | what, where, when, who, why, how |
+| Family / people | mother, father, sister, brother, friend, baby |
+| Core verbs | help, want, need, like, love, go, eat, drink, sleep, work, play |
+| Feelings / state | happy, sad, angry, sick, tired, good, bad, hot, cold |
+| Food / time / colours | water, food, today, tomorrow, morning, night, red, blue, green |
+
+> **Why `--max-per-gloss 5`?** Each word gets up to 5 video instances so that even if 3–4 are corrupted or dead links you still end up with at least 1 usable video per sign.
+
+After downloading, downloaded videos land in `WLASL-master\start_kit\raw_videos\`. For Phase 2, expand to full WLASL (21,083 videos) or add MS-ASL/ASL-LEX.
 
 | Dataset | Description | URL |
 |---|---|---|
@@ -49,8 +76,6 @@ flowchart TD
 | **ASL-LEX** | Lexical freq. database with video | [ASL-LEX](https://asl-lex.org/) |
 | **Handspeak** | Free ASL videos for common words | [handspeak.com](https://www.handspeak.com/) |
 | **OpenASL** | Open-source ASL data | [OpenASL](https://github.com/chevalierNoir/OpenASL) |
-
-Start with **WLASL** — it has the largest vocabulary and is widely used in research. For MVP, hand-curate ~200–500 high-frequency English words.
 
 ---
 
@@ -375,14 +400,15 @@ ai-sign-language-avatar/
 
 ### 8. MVP Step-by-Step Roadmap
 
-| Week | Milestone |
-|------|-----------|
-| **1** | Set up repo structure, install dependencies (MediaPipe, FastAPI, spaCy). Download WLASL dataset (or subset of 100 common words). |
-| **2** | Build `mediapipe_extractor.py`. Process 100 words → 100 JSON clips. Build normalizer/smoother. |
-| **3** | Build `gloss_converter.py` (rule-based). Build `motion_sequencer.py` with linear blend. Test end-to-end text → animation JSON. |
-| **4** | Build FastAPI backend. Test `POST /api/sign` endpoint. |
-| **5** | Set up Three.js scene. Load Ready Player Me avatar. Implement landmark → bone mapping. Render basic looping animation from JSON. |
-| **6** | Connect frontend to backend. Display avatar signing from text input. Polish UI. Record demo. |
+| Step | Milestone | Status |
+|------|-----------|--------|
+| **1a** | Set up repo structure, install dependencies (MediaPipe, FastAPI, spaCy). | — |
+| **1b** | Download WLASL daily-use subset: `--preset daily --max-per-gloss 5` (~500 videos queued). | ✅ Script ready |
+| **2** | Build `mediapipe_extractor.py`. Run on `raw_videos/` → 100 JSON clips in `motion_library/`. Build normalizer/smoother. | — |
+| **3** | Build `gloss_converter.py` (rule-based). Build `motion_sequencer.py` with linear blend. Test end-to-end text → animation JSON. | — |
+| **4** | Build FastAPI backend. Test `POST /api/sign` endpoint with `curl` / pytest. | — |
+| **5** | Set up Three.js scene. Load Ready Player Me avatar. Implement landmark → bone mapping. Render looping animation from JSON. | — |
+| **6** | Connect frontend to backend. Display avatar signing from text input. Polish UI. Record demo. | — |
 
 **Total estimated MVP time: 6 weeks (1 developer)**
 
@@ -499,3 +525,189 @@ websockets>=12.0    # Phase 2
 | High latency on clip stitching | Pre-cache top-1000 common sentences; stream clips progressively |
 | Choppy transitions between signs | Increase blend window; use motion graph in Phase 2 |
 | Dataset licensing restrictions | WLASL is research-use; build custom clips for commercial use |
+
+---
+
+## Testing Guide
+
+A layer-by-layer approach: verify each component independently before wiring everything together.
+
+---
+
+### Layer 0 — Verify Downloaded Videos
+
+```powershell
+# Count how many videos actually downloaded
+(Get-ChildItem WLASL-master\start_kit\raw_videos -File).Count
+
+# Spot-check a file is not zero bytes (corrupt)
+Get-ChildItem WLASL-master\start_kit\raw_videos -File |
+    Where-Object { $_.Length -lt 1000 } |
+    Select-Object Name, Length
+# Any files listed here are corrupt/incomplete — delete and re-run the downloader
+```
+
+Play a few videos manually to confirm they show a signer:
+```powershell
+# Open a random video in Windows Media Player
+$vids = Get-ChildItem WLASL-master\start_kit\raw_videos -Filter *.mp4
+Start-Process $vids[0].FullName
+```
+
+---
+
+### Layer 1 — Test MediaPipe Skeleton Extraction
+
+Run the extractor on a **single video** first:
+
+```python
+# data_pipeline/mediapipe_extractor.py
+python data_pipeline/mediapipe_extractor.py \
+    --video WLASL-master/start_kit/raw_videos/<some_video_id>.mp4 \
+    --out backend/motion_library/TEST.json
+```
+
+Inspect the output JSON to confirm it has frames with pose/hand data:
+
+```python
+import json
+clip = json.load(open("backend/motion_library/TEST.json"))
+print(f"fps={clip['fps']}  frames={clip['num_frames']}")
+print("First frame keys:", clip['frames'][0].keys())
+print("Pose landmarks in frame 0:", len(clip['frames'][0]['pose'] or []))
+```
+
+Expected output:
+```
+fps=25.0  frames=48
+First frame keys: dict_keys(['pose', 'left_hand', 'right_hand'])
+Pose landmarks in frame 0: 33
+```
+
+---
+
+### Layer 2 — Test Gloss Converter
+
+```python
+# From repo root
+python -c "
+from backend.gloss_converter import text_to_gloss
+tests = [
+    'Hello, how are you?',
+    'I want water please',
+    'My mother is sick',
+    'What is your name?',
+]
+for t in tests:
+    print(f'  {t!r}')
+    print(f'  → {text_to_gloss(t)}')
+    print()
+"
+```
+
+Expected: articles/auxiliaries removed, lemmas uppercased, e.g.:
+```
+'Hello, how are you?' → ['HELLO', 'HOW', 'YOU']
+'I want water please' → ['WANT', 'WATER', 'PLEASE']
+```
+
+---
+
+### Layer 3 — Test Motion Sequencer
+
+```python
+python -c "
+from backend.motion_sequencer import sequence_clips
+result = sequence_clips(['HELLO', 'WATER', 'HELP'])
+print(f'Total frames: {result[\"num_frames\"]}')
+print(f'FPS: {result[\"fps\"]}')
+print(f'First frame keys: {list(result[\"frames\"][0].keys())}')
+"
+```
+
+If a gloss JSON clip is missing, it should fall back to fingerspelling without crashing.
+
+---
+
+### Layer 4 — Test the FastAPI Backend
+
+**Start the server:**
+```powershell
+cd backend
+uvicorn main:app --reload --port 8000
+```
+
+**Test with curl:**
+```powershell
+# Basic sign request
+curl -X POST http://localhost:8000/api/sign `
+     -H "Content-Type: application/json" `
+     -d '{"text": "hello please help"}'
+
+# Expected response shape:
+# { "gloss": ["HELLO", "PLEASE", "HELP"],
+#   "animation": { "fps": 30, "num_frames": ..., "frames": [...] } }
+```
+
+**Test with pytest** (add to `tests/test_api.py`):
+```python
+from fastapi.testclient import TestClient
+from backend.main import app
+
+client = TestClient(app)
+
+def test_sign_endpoint_returns_gloss():
+    r = client.post("/api/sign", json={"text": "hello water"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "gloss" in body
+    assert "HELLO" in body["gloss"]
+    assert body["animation"]["num_frames"] > 0
+```
+
+Run tests:
+```powershell
+pytest tests/ -v
+```
+
+---
+
+### Layer 5 — Test the Frontend (Three.js)
+
+1. Start the backend (Layer 4 above).
+2. In a second terminal, start the Vite dev server:
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   # Opens at http://localhost:5173
+   ```
+3. Open `http://localhost:5173` in a browser.
+4. Type `hello water please` in the text box and click **Sign**.
+5. Verify the 3D avatar animates — arms/hands should move through the sequence.
+
+**Quick browser console test** (no avatar needed yet — just check the API response):
+```javascript
+// Paste in DevTools console while frontend is open
+fetch('http://localhost:8000/api/sign', {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({text: 'hello help water'})
+}).then(r => r.json()).then(d => {
+  console.log('Gloss:', d.gloss);
+  console.log('Frame count:', d.animation.num_frames);
+});
+```
+
+---
+
+### End-to-End Smoke Test Checklist
+
+| # | Check | Pass when... |
+|---|-------|-------------|
+| 1 | Videos downloaded | `raw_videos/` has ≥50 `.mp4` files, none under 1 KB |
+| 2 | Extractor runs | `motion_library/HELLO.json` exists with `num_frames > 10` |
+| 3 | Gloss converter | `text_to_gloss("hello how are you")` → `["HELLO", "HOW", "YOU"]` |
+| 4 | Sequencer | `sequence_clips(["HELLO","WATER"])` returns dict with frames list |
+| 5 | API responds | `POST /api/sign` returns 200 with gloss + animation JSON |
+| 6 | Frontend renders | Avatar moves its arms when a sentence is submitted |

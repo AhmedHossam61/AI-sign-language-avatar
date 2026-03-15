@@ -29,7 +29,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-per-gloss", type=int, default=None, metavar="M",
                         help="Maximum number of video instances to download per gloss. "
                              "Set to 1-3 for fast testing (e.g. --max-per-gloss 2).")
+    parser.add_argument("--preset", choices=["daily"], default=None,
+                        help="Use a built-in word list. 'daily' downloads ~100 high-frequency "
+                             "everyday signs (greetings, verbs, family, food, time, colours). "
+                             "Combines with --max-per-gloss; overrides --words and --top-n.")
     return parser.parse_args()
+
+
+# Curated list of high-frequency daily-use ASL signs present in WLASL.
+# Covers greetings, core verbs, family, feelings, food, time, questions, and colours.
+DAILY_WORDS = [
+    # Greetings & courtesy
+    "hello", "goodbye", "please", "thank", "sorry", "welcome", "nice",
+    # Yes / No / basic responses
+    "yes", "no", "maybe", "fine", "again",
+    # Questions
+    "what", "where", "when", "who", "why", "how",
+    # People & family
+    "mother", "father", "sister", "brother", "family", "friend",
+    "baby", "woman", "man", "person", "people", "child",
+    # Core verbs
+    "help", "want", "need", "like", "love", "know", "understand",
+    "go", "come", "stop", "wait", "see", "hear", "speak", "read",
+    "write", "give", "take", "buy", "work", "play", "learn", "teach",
+    "sleep", "wake", "sit", "stand", "walk", "run", "eat", "drink",
+    # Feelings
+    "happy", "sad", "angry", "scared", "sick", "tired", "bored",
+    "good", "bad", "hot", "cold",
+    # Common nouns
+    "water", "food", "milk", "coffee", "bread", "apple", "pizza",
+    "house", "school", "hospital", "store", "bathroom",
+    "book", "money", "phone", "computer", "car", "dog", "cat",
+    # Time
+    "today", "tomorrow", "yesterday", "morning", "afternoon",
+    "night", "week", "month", "year", "now", "later", "time",
+    # Colours
+    "red", "blue", "green", "yellow", "white", "black", "orange",
+    # Numbers / quantity
+    "one", "two", "three", "four", "five", "more", "less",
+    # Misc daily
+    "name", "age", "address", "doctor", "police", "emergency",
+    "open", "close", "right", "wrong", "same", "different",
+]
 
 
 def is_youtube(url: str) -> bool:
@@ -170,11 +211,19 @@ def main() -> None:
     if args.youtube_only and args.nonyoutube_only:
         raise SystemExit("Choose only one of --youtube-only or --nonyoutube-only")
 
+    # Resolve preset (overrides --words / --top-n)
+    words = args.words
+    top_n = args.top_n
+    if args.preset == "daily":
+        words = DAILY_WORDS
+        top_n = None
+        print(f"[preset=daily] Targeting {len(DAILY_WORDS)} high-frequency daily signs.")
+
     index_path = Path(args.index)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    instances = load_instances(index_path, top_n=args.top_n, words=args.words, max_per_gloss=args.max_per_gloss)
+    instances = load_instances(index_path, top_n=top_n, words=words, max_per_gloss=args.max_per_gloss)
 
     if args.youtube_only:
         instances = [i for i in instances if is_youtube(i["url"])]
