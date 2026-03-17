@@ -12,41 +12,43 @@ What is running right now, built from the actual source files:
 
 ```mermaid
 flowchart TD
-    subgraph Offline ["Offline Data Pipeline (run once)"]
-        V["WLASL Videos\n(raw_videos/*.mp4)"]
-        MP["mediapipe_extractor.py\nMediaPipe Holistic\npose 33pt + hands 21pt each"]
-        NM["normalizer.py\nhip-center normalize\nSavitzky-Golay smooth"]
-        CL["motion_library/*.json\none clip per gloss"]
-        V --> MP --> NM --> CL
+    %% ── Offline Data Pipeline ──────────────────────────────
+    subgraph Offline ["Offline Data Pipeline  (run once)"]
+        direction LR
+        V["WLASL Videos"] --> MP["MediaPipe Extractor\npose + hand joints"] --> NM["Normalizer\nhip-center · smooth"] --> CL["motion_library/*.json\none clip per gloss"]
     end
 
+    %% ── Real-time Pipeline ─────────────────────────────────
     subgraph Input ["User Input"]
-        MIC["Microphone\n(live audio)"]
-        ASR["ASR Engine\nWhisper / streaming STT\nspeech → text transcript"]
-        MIC -->|"audio stream"| ASR
+        MIC["Microphone"] -->|"audio stream"| ASR["Whisper ASR\nspeech → text"]
     end
 
-    subgraph Backend ["Backend — FastAPI + Uvicorn (localhost:8000)"]
-        GC["gloss_converter.py\nrule-based tokenizer\nspaCy optional, regex fallback\nstop-word removal + lemmatize"]
-        MS["motion_sequencer.py\nclip lookup + stitch\nlinear blend between signs\nfingerspell fallback"]
-        API["main.py — REST API\nGET  /api/health\nGET  /api/glosses\nPOST /api/sign"]
-        GC --> MS --> API
+    subgraph Backend ["Backend — FastAPI  (port 8000)"]
+        GC["Gloss Converter\nEnglish → ASL Gloss"] --> MS["Motion Sequencer\nclip lookup + blend"] --> API["REST API\nPOST /api/sign"]
     end
 
-    subgraph Frontend ["Frontend — Three.js r165 via CDN (localhost:5173)"]
-        HC["index.html\nimportmap → CDN\nno build step"]
-        AC["api_client.js\nfetch POST /api/sign"]
-        AA["avatar_animator.js\nbone mapping\nupdate loop"]
-        UI["Browser\n3D avatar + speed slider\ngloss display + replay"]
-        HC --> AC --> AA --> UI
+    subgraph Frontend ["Frontend — Three.js  (port 5173)"]
+        AC["api_client.js\nHTTP → backend"] --> AA["avatar_animator.js\nbone mapping"] --> UI["Browser\n3D Avatar"]
     end
 
+    %% ── Cross-subgraph connections ──────────────────────────
     CL -->|"loaded at startup"| MS
-    API -->|"animation JSON\n{fps, num_frames, frames[]}"| AC
-    ASR -->|"English transcript"| AC
+    ASR -->|"English text"| GC
+    API -->|"animation JSON"| AC
 
+    %% ── Color coding by layer ───────────────────────────────
     style MIC fill:#5bc0de,color:#000
     style ASR fill:#5bc0de,color:#000
+    style GC  fill:#f0ad4e,color:#000
+    style MS  fill:#f0ad4e,color:#000
+    style API fill:#f0ad4e,color:#000
+    style AC  fill:#5cb85c,color:#000
+    style AA  fill:#5cb85c,color:#000
+    style UI  fill:#5cb85c,color:#000
+    style V   fill:#aab7b8,color:#000
+    style MP  fill:#aab7b8,color:#000
+    style NM  fill:#aab7b8,color:#000
+    style CL  fill:#aab7b8,color:#000
 ```
 
 ### What each file does today
