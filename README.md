@@ -1,6 +1,6 @@
 # AI Sign Language Avatar
 
-A real-time system that converts English text into ASL skeleton animations played by a 3D avatar in the browser.
+A real-time system that converts spoken English (via ASR) into ASL skeleton animations played by a 3D avatar in the browser.
 
 > Full multi-phase implementation plan (architecture, roadmap, testing guide) → [`plan.md`](plan.md)
 
@@ -20,6 +20,12 @@ flowchart TD
         V --> MP --> NM --> CL
     end
 
+    subgraph Input ["User Input"]
+        MIC["Microphone\n(live audio)"]
+        ASR["ASR Engine\nWhisper / streaming STT\nspeech → text transcript"]
+        MIC -->|"audio stream"| ASR
+    end
+
     subgraph Backend ["Backend — FastAPI + Uvicorn (localhost:8000)"]
         GC["gloss_converter.py\nrule-based tokenizer\nspaCy optional, regex fallback\nstop-word removal + lemmatize"]
         MS["motion_sequencer.py\nclip lookup + stitch\nlinear blend between signs\nfingerspell fallback"]
@@ -37,7 +43,10 @@ flowchart TD
 
     CL -->|"loaded at startup"| MS
     API -->|"animation JSON\n{fps, num_frames, frames[]}"| AC
-    User["User types English text"] --> AC
+    ASR -->|"English transcript"| AC
+
+    style MIC fill:#5bc0de,color:#000
+    style ASR fill:#5bc0de,color:#000
 ```
 
 ### What each file does today
